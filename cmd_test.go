@@ -1479,3 +1479,110 @@ func TestCmdLineBufferIncrease(t *testing.T) {
 	}
 	<-catStderrStatus
 }
+
+func TestOutputBufferDefaultScannerBufSize(t *testing.T) {
+	// Default scanner buffer size is bufio.MaxScanTokenSize (64KB).
+	// A line within that limit must be returned correctly.
+	buf := cmd.NewOutputBuffer()
+	line := bytes.Repeat([]byte("x"), 1000)
+	line = append(line, '\n')
+	buf.Write(line)
+	lines := buf.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if len(lines[0]) != 1000 {
+		t.Errorf("expected line of 1000 bytes, got %d", len(lines[0]))
+	}
+	if err := buf.Err(); err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestOutputBufferLongLineTruncation(t *testing.T) {
+	// A line exceeding bufio.MaxScanTokenSize (64KB) with the default buffer
+	// must set Err() to a non-nil error, and Lines() must stop at that point.
+	buf := cmd.NewOutputBuffer()
+
+	longLine := bytes.Repeat([]byte("x"), 65*1024) // 65KB > 64KB default
+	longLine = append(longLine, '\n')
+	after := []byte("after\n")
+	buf.Write(longLine)
+	buf.Write(after)
+
+	lines := buf.Lines()
+	if buf.Err() == nil {
+		t.Error("expected a non-nil error from Err() after long line, got nil")
+	}
+	for _, l := range lines {
+		if l == "after" {
+			t.Error("lines after the oversized line should not appear when truncated")
+		}
+	}
+}
+
+func TestOutputBufferSetScannerBufferSize(t *testing.T) {
+	// SetScannerBufferSize allows reading lines larger than 64KB.
+	buf := cmd.NewOutputBuffer()
+	buf.SetScannerBufferSize(256 * 1024) // 256KB
+
+	longLine := bytes.Repeat([]byte("y"), 65*1024) // 65KB
+	longLine = append(longLine, '\n')
+	buf.Write(longLine)
+	buf.Write([]byte("after\n"))
+
+	lines := buf.Lines()
+	if err := buf.Err(); err != nil {
+		t.Errorf("expected no error with enlarged buffer, got: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+	if len(lines[0]) != 65*1024 {
+		t.Errorf("expected first line of %d bytes, got %d", 65*1024, len(lines[0]))
+	}
+	if lines[1] != "after" {
+		t.Errorf("expected second line 'after', got %q", lines[1])
+	}
+}
+
+func TestOutputBufferLineBufferSizeOption(t *testing.T) {
+	// Options.LineBufferSize propagates to OutputBuffer when Buffered is true.
+	const bufSize = 256 * 1024 // 256KB
+	p := cmd.NewCmdOptions(
+		cmd.Options{Buffered: true, LineBufferSize: bufSize},
+		"echo",
+		string(bytes.Repeat([]byte("z"), 65*1024)), // 65KB argument → one long output line
+	)
+	status := <-p.Start()
+	if status.Error != nil {
+		t.Fatalf("command error: %v", status.Error)
+	}
+	if len(status.Stdout) != 1 {
+		t.Fatalf("expected 1 line of stdout, got %d", len(status.Stdout))
+	}
+	if len(status.Stdout[0]) != 65*1024 {
+		t.Errorf("expected stdout line of %d bytes, got %d", 65*1024, len(status.Stdout[0]))
+	}
+}
+
+func TestOutputBufferClonePropagatesScannerBufSize(t *testing.T) {
+	// Clone must propagate LineBufferSize to the cloned Cmd's OutputBuffer.
+	const bufSize = 256 * 1024
+	p := cmd.NewCmdOptions(
+		cmd.Options{Buffered: true, LineBufferSize: bufSize},
+		"echo",
+		string(bytes.Repeat([]byte("z"), 65*1024)),
+	)
+	clone := p.Clone()
+	status := <-clone.Start()
+	if status.Error != nil {
+		t.Fatalf("clone command error: %v", status.Error)
+	}
+	if len(status.Stdout) != 1 {
+		t.Fatalf("expected 1 line from clone stdout, got %d", len(status.Stdout))
+	}
+	if len(status.Stdout[0]) != 65*1024 {
+		t.Errorf("expected clone stdout line of %d bytes, got %d", 65*1024, len(status.Stdout[0]))
+	}
+}

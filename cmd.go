@@ -205,10 +205,17 @@ func NewCmdOptions(options Options, name string, args ...string) *Cmd {
 	if options.Buffered {
 		c.stdoutBuf = NewOutputBuffer()
 		c.stderrBuf = NewOutputBuffer()
+		if options.LineBufferSize > 0 {
+			c.stdoutBuf.SetScannerBufferSize(int(options.LineBufferSize))
+			c.stderrBuf.SetScannerBufferSize(int(options.LineBufferSize))
+		}
 	}
 
 	if options.CombinedOutput {
 		c.stdoutBuf = NewOutputBuffer()
+		if options.LineBufferSize > 0 {
+			c.stdoutBuf.SetScannerBufferSize(int(options.LineBufferSize))
+		}
 		c.stderrBuf = nil
 	}
 
@@ -239,11 +246,18 @@ func NewCmdOptions(options Options, name string, args ...string) *Cmd {
 // of the original object is lost. Cmd is one-use only, so if you need to restart
 // a Cmd, you need to Clone it.
 func (c *Cmd) Clone() *Cmd {
+	var lineBufferSize uint
+	if c.stdoutBuf != nil {
+		lineBufferSize = uint(c.stdoutBuf.scannerBufSize)
+	} else if c.stdoutStream != nil {
+		lineBufferSize = uint(c.stdoutStream.bufSize)
+	}
 	clone := NewCmdOptions(
 		Options{
 			Buffered:       c.stdoutBuf != nil,
 			CombinedOutput: c.stdoutBuf != nil,
 			Streaming:      c.stdoutStream != nil,
+			LineBufferSize: lineBufferSize,
 		},
 		c.Name,
 		c.Args...,
@@ -582,20 +596,41 @@ func (c *Cmd) run(in io.Reader) {
 // While runnableCmd is running, call stdout.Lines() to read all output
 // currently written.
 type OutputBuffer struct {
-	buf   *bytes.Buffer
-	lines []string
+	buf            *bytes.Buffer
+	lines          []string
+	scannerBufSize int
+	scanErr        error
 	*sync.Mutex
 }
 
 // NewOutputBuffer creates a new output buffer. The buffer is unbounded and safe
 // for multiple goroutines to read while the command is running by calling Lines.
 func NewOutputBuffer() *OutputBuffer {
-	out := &OutputBuffer{
-		buf:   &bytes.Buffer{},
-		lines: []string{},
-		Mutex: &sync.Mutex{},
+	return &OutputBuffer{
+		buf:            &bytes.Buffer{},
+		lines:          []string{},
+		scannerBufSize: bufio.MaxScanTokenSize,
+		Mutex:          &sync.Mutex{},
 	}
-	return out
+}
+
+// SetScannerBufferSize sets the maximum token size for the bufio.Scanner used
+// by Lines(). The default is bufio.MaxScanTokenSize (64KB). Increase this value
+// if Lines() truncates output because a line exceeds that limit (Err() will
+// return a non-nil error in that case). Must be called before the command starts.
+func (rw *OutputBuffer) SetScannerBufferSize(n int) {
+	rw.Lock()
+	rw.scannerBufSize = n
+	rw.Unlock()
+}
+
+// Err returns the last error set by Lines(), if any. A non-nil error indicates
+// that output was truncated because a line exceeded the scanner buffer size.
+// Use SetScannerBufferSize to increase the limit.
+func (rw *OutputBuffer) Err() error {
+	rw.Lock()
+	defer rw.Unlock()
+	return rw.scanErr
 }
 
 // Write makes OutputBuffer implement the io.Writer interface. Do not call
@@ -610,13 +645,21 @@ func (rw *OutputBuffer) Write(p []byte) (n int, err error) {
 // Lines returns lines of output written by the Cmd. It is safe to call while
 // the Cmd is running and after it has finished. Subsequent calls returns more
 // lines, if more lines were written. "\r\n" are stripped from the lines.
+//
+// If a line exceeds the scanner buffer size (set via SetScannerBufferSize,
+// default bufio.MaxScanTokenSize / 64KB), scanning stops and Err() returns
+// the error. Use SetScannerBufferSize to increase the limit.
 func (rw *OutputBuffer) Lines() []string {
 	rw.Lock()
 	// Scanners are io.Readers which effectively destroy the buffer by reading
 	// to EOF. So once we scan the buf to lines, the buf is empty again.
 	s := bufio.NewScanner(rw.buf)
+	s.Buffer(make([]byte, rw.scannerBufSize), rw.scannerBufSize)
 	for s.Scan() {
 		rw.lines = append(rw.lines, s.Text())
+	}
+	if err := s.Err(); err != nil {
+		rw.scanErr = err
 	}
 	rw.Unlock()
 	return rw.lines
