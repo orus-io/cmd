@@ -389,11 +389,16 @@ func (c *Cmd) Status() Status {
 		if !c.final {
 			if c.stdoutBuf != nil {
 				c.status.Stdout = c.stdoutBuf.Lines()
+				if err := c.stdoutBuf.Err(); err != nil && c.status.Error == nil {
+					c.status.Error = err
+				}
 				c.stdoutBuf = nil // release buffers
-
 			}
 			if c.stderrBuf != nil {
 				c.status.Stderr = c.stderrBuf.Lines()
+				if err := c.stderrBuf.Err(); err != nil && c.status.Error == nil {
+					c.status.Error = err
+				}
 				c.stderrBuf = nil // release buffers
 			}
 			c.final = true

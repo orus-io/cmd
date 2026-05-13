@@ -1566,6 +1566,20 @@ func TestOutputBufferLineBufferSizeOption(t *testing.T) {
 	}
 }
 
+func TestCmdStatusErrorOnScannerOverflow(t *testing.T) {
+	// When a line exceeds the scanner buffer size, status.Error must be non-nil
+	// so the caller can detect the truncation without inspecting OutputBuffer directly.
+	p := cmd.NewCmdOptions(
+		cmd.Options{Buffered: true}, // default 64KB limit
+		"echo",
+		string(bytes.Repeat([]byte("x"), 65*1024)), // 65KB > 64KB
+	)
+	status := <-p.Start()
+	if status.Error == nil {
+		t.Error("expected status.Error to be non-nil on scanner overflow, got nil")
+	}
+}
+
 func TestOutputBufferClonePropagatesScannerBufSize(t *testing.T) {
 	// Clone must propagate LineBufferSize to the cloned Cmd's OutputBuffer.
 	const bufSize = 256 * 1024
