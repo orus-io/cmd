@@ -1,4 +1,4 @@
-module github.com/go-cmd/cmd
+module github.com/orus-io/cmd
 
 go 1.20
 

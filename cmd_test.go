@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-cmd/cmd"
+	"github.com/orus-io/cmd"
 	"github.com/go-test/deep"
 )
 
